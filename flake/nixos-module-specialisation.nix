@@ -38,8 +38,8 @@
         };
 
         # Configure hooks to switch between specialisations
-        services.hyperfocusd.settings = {
-          hooks.startFocus.argv = [
+        services.hyperfocusd.settings.hooks = {
+          startFocus.argv = [
             "${pkgs.bash}/bin/sh"
             "-c"
             ''
@@ -49,7 +49,7 @@
               /run/current-system/specialisation/hyperfocus/bin/switch-to-configuration test
             ''
           ];
-          hooks.stopFocus.argv = [
+          stopFocus.argv = [
             "${pkgs.bash}/bin/sh"
             "-c"
             ''

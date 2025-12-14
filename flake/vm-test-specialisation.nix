@@ -12,7 +12,11 @@
       extraBaseModules = self.nixosModules.default;
 
       nodes.machine = { config, pkgs, ... }: {
-        services.hyperfocusd.specialisation.enable = true;
+        services.hyperfocusd = {
+          specialisation.enable = true;
+          # Use debug logging to test that log level configuration works
+          settings.log_level = "debug";
+        };
       };
 
       testScript = ''
@@ -32,6 +36,15 @@
         # After the command completes, stopFocus hook runs asynchronously
         # Wait for the system to switch back to normal config
         machine.wait_until_succeeds("test $(cat /etc/example-hyperfocus) = false")
+
+        # Check journal logs to verify structured logging is working
+        logs = machine.succeed("journalctl -u hyperfocusd --no-pager")
+        print("=== hyperfocusd journal logs ===")
+        print(logs)
+
+        # Verify debug logs are present (log_level is set to "debug" in config)
+        assert "Client connected" in logs, "Debug log 'Client connected' not found"
+        assert "Executing hook" in logs, "Debug log 'Executing hook' not found"
       '';
     };
   };

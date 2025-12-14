@@ -27,7 +27,16 @@
         };
 
         settings = lib.mkOption {
-          type = settingsFormat.type;
+          type = lib.types.submodule {
+            freeformType = settingsFormat.type;
+            options = {
+              log_level = lib.mkOption {
+                type = lib.types.enum [ "off" "error" "warn" "info" "debug" ];
+                default = "info";
+                description = "Log level for hyperfocusd daemon";
+              };
+            };
+          };
           default = {};
           description = ''
             Configuration for hyperfocusd daemon.

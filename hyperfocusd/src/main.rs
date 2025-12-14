@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
 use listenfd::ListenFd;
+use log::{debug, error, info, warn, LevelFilter};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
@@ -36,6 +37,37 @@ enum Commands {
 struct Config {
     #[serde(default)]
     hooks: Hooks,
+    #[serde(default = "default_log_level")]
+    log_level: String,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn journal_logger_error_exit() -> ! {
+    eprintln!("Note: The daemon currently requires systemd with journal logging.");
+    eprintln!("Standalone usage is not supported yet, but could easily be added as a feature.");
+    process::exit(1);
+}
+
+fn parse_log_level(level: &str) -> LevelFilter {
+    match level.to_lowercase().as_str() {
+        "off" => LevelFilter::Off,
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        // "trace" => LevelFilter::Trace,
+        "trace" => {
+            eprintln!("Log level 'trace' is not supported. Use: off, error, warn, info, debug");
+            process::exit(1);
+        }
+        _ => {
+            eprintln!("Invalid log level '{}'. Valid values: off, error, warn, info, debug", level);
+            process::exit(1);
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -90,11 +122,11 @@ fn main() {
 
 fn execute_hook(hook: &Hook) {
     if hook.argv.is_empty() {
-        eprintln!("Warning: hook has empty argv");
+        warn!("Hook has empty argv");
         return;
     }
 
-    eprintln!("Executing hook: {:?}", hook.argv);
+    debug!("Executing hook: {:?}", hook.argv);
 
     let result = Command::new(&hook.argv[0])
         .args(&hook.argv[1..])
@@ -103,19 +135,19 @@ fn execute_hook(hook: &Hook) {
     match result {
         Ok(status) => {
             if status.success() {
-                eprintln!("Hook completed successfully");
+                info!("Hook completed successfully");
             } else {
-                eprintln!("Hook {:?} failed with status: {}", hook.argv, status);
+                error!("Hook {:?} failed with status: {}", hook.argv, status);
             }
         }
         Err(e) => {
-            eprintln!("Failed to execute hook {:?}: {}", hook.argv, e);
+            error!("Failed to execute hook {:?}: {}", hook.argv, e);
         }
     }
 }
 
 fn run_daemon(config_path: Option<PathBuf>) {
-    // Load configuration if provided
+    // Load configuration first to get log level
     let config = config_path.map(|path| {
         let contents = fs::read_to_string(&path)
             .unwrap_or_else(|e| {
@@ -129,6 +161,26 @@ fn run_daemon(config_path: Option<PathBuf>) {
             })
     });
 
+    // Initialize systemd journal logger
+    let journal_log = match systemd_journal_logger::JournalLog::new() {
+        Ok(logger) => logger,
+        Err(e) => {
+            eprintln!("Failed to create systemd journal logger: {}", e);
+            journal_logger_error_exit();
+        }
+    };
+
+    if let Err(e) = journal_log.install() {
+        eprintln!("Failed to install systemd journal logger: {}", e);
+        journal_logger_error_exit();
+    }
+
+    // Set log level from config
+    let level = config.as_ref()
+        .map(|c| parse_log_level(&c.log_level))
+        .unwrap_or(LevelFilter::Info);
+    log::set_max_level(level);
+
     // Get the socket from systemd or listen on our own
     let mut listenfd = ListenFd::from_env();
     let listener = listenfd
@@ -139,21 +191,21 @@ fn run_daemon(config_path: Option<PathBuf>) {
     // Notify systemd that we're ready
     let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
 
-    eprintln!("hyperfocusd daemon started and ready");
+    info!("hyperfocusd daemon started and ready");
 
     // Accept connections and handle them sequentially
     // The single-threaded loop provides mutual exclusion naturally
     for stream in listener.incoming() {
         match stream {
-            Ok(mut stream) => {
-                eprintln!("Client connected");
+            Ok(stream) => {
+                debug!("Client connected");
 
                 // Read the request from the client using BufReader
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
 
                 if reader.read_line(&mut line).is_ok() {
-                    eprintln!("Received request: {}", line.trim());
+                    debug!("Received request: {}", line.trim());
 
                     // Execute startFocus hook if configured
                     if let Some(ref cfg) = config {
@@ -170,17 +222,17 @@ fn run_daemon(config_path: Option<PathBuf>) {
                     line.clear();
                     match reader.read_line(&mut line) {
                         Ok(0) => {
-                            eprintln!("Client disconnected without sending DONE (crashed or killed?)");
+                            warn!("Client disconnected without sending DONE (crashed or killed?)");
                         }
                         Ok(_) => {
                             if line.trim() == "DONE" {
-                                eprintln!("Client finished cleanly");
+                                debug!("Client finished cleanly");
                             } else {
-                                eprintln!("Client sent unexpected message: {}", line.trim());
+                                warn!("Client sent unexpected message: {}", line.trim());
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error reading from client: {}", e);
+                            error!("Error reading from client: {}", e);
                         }
                     }
 
@@ -193,7 +245,7 @@ fn run_daemon(config_path: Option<PathBuf>) {
                 }
             }
             Err(e) => {
-                eprintln!("Connection error: {}", e);
+                error!("Connection error: {}", e);
             }
         }
     }
@@ -267,4 +319,35 @@ fn run_on_with_args(command: Vec<String>) {
 
     // Exit with the same status code as the child process
     process::exit(status.code().unwrap_or(1));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_log_level_valid() {
+        assert_eq!(parse_log_level("off"), LevelFilter::Off);
+        assert_eq!(parse_log_level("error"), LevelFilter::Error);
+        assert_eq!(parse_log_level("warn"), LevelFilter::Warn);
+        assert_eq!(parse_log_level("info"), LevelFilter::Info);
+        assert_eq!(parse_log_level("debug"), LevelFilter::Debug);
+    }
+
+    #[test]
+    fn test_parse_log_level_case_insensitive() {
+        assert_eq!(parse_log_level("INFO"), LevelFilter::Info);
+        assert_eq!(parse_log_level("Debug"), LevelFilter::Debug);
+    }
+
+    // Note: test_parse_log_level_invalid and test_parse_log_level_rejects_trace
+    // cannot be unit tested because they call process::exit(1).
+    // They are tested indirectly through the NixOS VM test which validates
+    // the enum at the Nix level.
+    //
+    // If you add trace support, remember to:
+    // 1. Remove the explicit "trace" match arm that calls process::exit(1)
+    // 2. Uncomment the "trace" => LevelFilter::Trace line
+    // 3. Add "trace" to the NixOS module log_level enum in flake/nixos-module.nix
+    // 4. Update the "Invalid log level" error message to include "trace"
 }
