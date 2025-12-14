@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
+use listenfd::ListenFd;
 use std::env;
-use std::process;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::process::{self, Command, Stdio};
 
 #[derive(Parser)]
 #[command(name = "hyperfocusd")]
@@ -60,8 +63,40 @@ fn main() {
 }
 
 fn run_daemon() {
-    eprintln!("hyperfocusd daemon not yet implemented");
-    process::exit(1);
+    // Get the socket from systemd or listen on our own
+    let mut listenfd = ListenFd::from_env();
+    let listener = listenfd
+        .take_unix_listener(0)
+        .expect("Failed to get socket from systemd")
+        .expect("No socket provided by systemd");
+
+    // Notify systemd that we're ready
+    let _ = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]);
+
+    eprintln!("hyperfocusd daemon started and ready");
+
+    // Accept connections and handle them
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                eprintln!("Client connected");
+
+                // Read the request from the client
+                let reader = BufReader::new(&stream);
+                let mut lines = reader.lines();
+
+                if let Some(Ok(line)) = lines.next() {
+                    eprintln!("Received request: {}", line);
+
+                    // For now, just acknowledge
+                    let _ = stream.write_all(b"OK\n");
+                }
+            }
+            Err(e) => {
+                eprintln!("Connection error: {}", e);
+            }
+        }
+    }
 }
 
 fn run_on_command() {
@@ -85,7 +120,43 @@ fn run_on_with_args(command: Vec<String>) {
         process::exit(1);
     }
 
-    eprintln!("hyperfocus-on not yet implemented");
-    eprintln!("Would run: {:?}", command);
-    process::exit(1);
+    // Connect to the daemon socket
+    let socket_path = "/run/hyperfocusd/hyperfocusd.sock";
+    let mut stream = UnixStream::connect(socket_path)
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to connect to hyperfocusd: {}", e);
+            process::exit(1);
+        });
+
+    // Send request to enter hyperfocus mode
+    stream.write_all(b"START\n").unwrap();
+
+    // Wait for acknowledgment
+    let reader = BufReader::new(&stream);
+    let mut lines = reader.lines();
+    if let Some(Ok(response)) = lines.next() {
+        if response != "OK" {
+            eprintln!("Unexpected response from daemon: {}", response);
+            process::exit(1);
+        }
+    }
+
+    // Run the command with HYPERFOCUSING=1 environment variable
+    let mut child = Command::new(&command[0])
+        .args(&command[1..])
+        .env("HYPERFOCUSING", "1")
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to execute command: {}", e);
+            process::exit(1);
+        });
+
+    // Wait for the command to complete
+    let status = child.wait().unwrap();
+
+    // Exit with the same status code as the child process
+    process::exit(status.code().unwrap_or(1));
 }

@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+sd-notify = "0.4"
+listenfd = "1"
