@@ -36,7 +36,24 @@
         output = machine.succeed("hyperfocus-on -- echo 'test output'")
         assert "test output" in output, f"Expected 'test output' in output, got {output}"
 
-        # Verify daemon is still running after session ends
+        # Test exit code propagation
+        machine.succeed("hyperfocus-on -- sh -c 'exit 42' || test $? -eq 42")
+
+        # Test '--' separator handling (command should work with or without it)
+        machine.succeed("hyperfocus-on printenv HYPERFOCUSING | grep 1 >/dev/null")
+
+        # Test empty command error
+        machine.fail("hyperfocus-on 2>&1 | grep 'Error: no command specified' >/dev/null")
+
+        # Test daemon not running error
+        machine.succeed("systemctl stop hyperfocusd.socket hyperfocusd.service")
+        machine.fail("hyperfocus-on -- echo test 2>&1 | grep 'Failed to connect to hyperfocusd' >/dev/null")
+        machine.succeed("systemctl start hyperfocusd.socket")
+
+        # Trigger socket activation by making a connection
+        machine.succeed("hyperfocus-on -- echo 'reactivated' | grep 'reactivated' >/dev/null")
+
+        # Verify daemon is running after socket activation
         machine.succeed("systemctl is-active hyperfocusd.service")
       '';
     };
