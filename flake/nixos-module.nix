@@ -3,7 +3,11 @@
 {
   _class = "flake";
 
-  flake.nixosModules.default = { config, lib, pkgs, ... }:
+  flake.nixosModules.default = { ... }: {
+    imports = [ self.nixosModules.service ];
+  };
+
+  flake.nixosModules.service = { config, lib, pkgs, ... }:
     let
       cfg = config.services.hyperfocusd;
     in
