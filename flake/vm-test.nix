@@ -11,6 +11,15 @@
 
       nodes.machine = { config, pkgs, ... }: {
         services.hyperfocusd.enable = true;
+
+        specialisation.simple-config = {
+          configuration = {
+            services.hyperfocusd.settings = {
+              hooks.startFocus.argv = [ "${pkgs.bash}/bin/sh" "-c" "echo started-focus > /tmp/hook-state" ];
+              hooks.stopFocus.argv = [ "${pkgs.bash}/bin/sh" "-c" "echo stopped-focus > /tmp/hook-state" ];
+            };
+          };
+        };
       };
 
       testScript = ''
@@ -90,6 +99,19 @@
         # Release second client
         # System state after: Second client completes
         machine.succeed("echo done >/tmp/release-second")
+
+        # Test hooks from JSON config file using specialisation
+        # Switch to simple-config specialisation which has hooks configured
+        machine.succeed("/run/booted-system/specialisation/simple-config/bin/switch-to-configuration test")
+
+        # Run hyperfocus-on with the configured daemon
+        # The startFocus hook should run before the command starts, writing "started-focus"
+        # The command itself should verify it's in the focused state
+        # The stopFocus hook should run after the command completes, writing "stopped-focus"
+        machine.succeed("hyperfocus-on -- sh -c 'grep started-focus /tmp/hook-state' >/dev/null")
+
+        # Verify stopFocus hook was executed last (overwrites the file)
+        machine.succeed("grep stopped-focus /tmp/hook-state >/dev/null")
       '';
     };
   };

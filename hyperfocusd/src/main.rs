@@ -1,8 +1,11 @@
 use clap::{Parser, Subcommand};
 use listenfd::ListenFd;
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 
 #[derive(Parser)]
@@ -16,13 +19,36 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Run the hyperfocusd daemon
-    Daemon,
+    Daemon {
+        /// Path to configuration file
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Run a command in hyperfocus mode
     On {
         /// Command to run
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Config {
+    #[serde(default)]
+    hooks: Hooks,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct Hooks {
+    #[serde(rename = "startFocus", default)]
+    start_focus: Option<Hook>,
+    #[serde(rename = "stopFocus", default)]
+    stop_focus: Option<Hook>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Hook {
+    argv: Vec<String>,
 }
 
 fn main() {
@@ -47,22 +73,58 @@ fn main() {
             let cli = Cli::parse();
 
             match cli.command {
-                Some(Commands::Daemon) => {
-                    run_daemon();
+                Some(Commands::Daemon { config }) => {
+                    run_daemon(config);
                 }
                 Some(Commands::On { command }) => {
                     run_on_with_args(command);
                 }
                 None => {
                     // Default: run daemon
-                    run_daemon();
+                    run_daemon(None);
                 }
             }
         }
     }
 }
 
-fn run_daemon() {
+fn execute_hook(hook: &Hook) {
+    if hook.argv.is_empty() {
+        eprintln!("Warning: hook has empty argv");
+        return;
+    }
+
+    let result = Command::new(&hook.argv[0])
+        .args(&hook.argv[1..])
+        .status();
+
+    match result {
+        Ok(status) => {
+            if !status.success() {
+                eprintln!("Hook {:?} failed with status: {}", hook.argv, status);
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to execute hook {:?}: {}", hook.argv, e);
+        }
+    }
+}
+
+fn run_daemon(config_path: Option<PathBuf>) {
+    // Load configuration if provided
+    let config = config_path.map(|path| {
+        let contents = fs::read_to_string(&path)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to read config file {:?}: {}", path, e);
+                process::exit(1);
+            });
+        serde_json::from_str::<Config>(&contents)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to parse config file {:?}: {}", path, e);
+                process::exit(1);
+            })
+    });
+
     // Get the socket from systemd or listen on our own
     let mut listenfd = ListenFd::from_env();
     let listener = listenfd
@@ -89,6 +151,13 @@ fn run_daemon() {
                 if reader.read_line(&mut line).is_ok() {
                     eprintln!("Received request: {}", line.trim());
 
+                    // Execute startFocus hook if configured
+                    if let Some(ref cfg) = config {
+                        if let Some(ref hook) = cfg.hooks.start_focus {
+                            execute_hook(hook);
+                        }
+                    }
+
                     // Acknowledge
                     let _ = reader.get_mut().write_all(b"OK\n");
 
@@ -108,6 +177,13 @@ fn run_daemon() {
                         }
                         Err(e) => {
                             eprintln!("Error reading from client: {}", e);
+                        }
+                    }
+
+                    // Execute stopFocus hook if configured
+                    if let Some(ref cfg) = config {
+                        if let Some(ref hook) = cfg.hooks.stop_focus {
+                            execute_hook(hook);
                         }
                     }
                 }
