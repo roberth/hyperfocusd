@@ -7,7 +7,7 @@
     checks.vm-test = pkgs.testers.runNixOSTest {
       name = "hyperfocusd-basic-workflow";
 
-      extraBaseModules = self.nixosModules.default;
+      extraBaseModules = self.nixosModules.service;
 
       nodes.machine = { config, pkgs, ... }: {
         services.hyperfocusd.enable = true;

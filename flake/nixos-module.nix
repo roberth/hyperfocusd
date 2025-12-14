@@ -4,7 +4,10 @@
   _class = "flake";
 
   flake.nixosModules.default = { ... }: {
-    imports = [ self.nixosModules.service ];
+    imports = [
+      self.nixosModules.service
+      self.nixosModules.specialisation
+    ];
   };
 
   flake.nixosModules.service = { config, lib, pkgs, ... }:

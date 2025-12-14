@@ -94,13 +94,17 @@ fn execute_hook(hook: &Hook) {
         return;
     }
 
+    eprintln!("Executing hook: {:?}", hook.argv);
+
     let result = Command::new(&hook.argv[0])
         .args(&hook.argv[1..])
         .status();
 
     match result {
         Ok(status) => {
-            if !status.success() {
+            if status.success() {
+                eprintln!("Hook completed successfully");
+            } else {
                 eprintln!("Hook {:?} failed with status: {}", hook.argv, status);
             }
         }

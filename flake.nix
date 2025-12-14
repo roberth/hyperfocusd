@@ -12,7 +12,9 @@
       imports = [
         nix-cargo-integration.flakeModule
         ./flake/nixos-module.nix
+        ./flake/nixos-module-specialisation.nix
         ./flake/vm-test.nix
+        ./flake/vm-test-specialisation.nix
       ];
 
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
