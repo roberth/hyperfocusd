@@ -100,8 +100,8 @@ fn main() {
             // When called as hyperfocus-on, run the on command
             run_on_command();
         }
-        "hyperfocusd" | _ => {
-            // When called as hyperfocusd or anything else, parse subcommands
+        "hyperfocusd" => {
+            // When called as hyperfocusd, parse subcommands
             let cli = Cli::parse();
 
             match cli.command {
@@ -116,6 +116,11 @@ fn main() {
                     run_daemon(None);
                 }
             }
+        }
+        unknown => {
+            eprintln!("Unknown command name: {}", unknown);
+            eprintln!("This binary should be called as 'hyperfocusd' or 'hyperfocus-on'.");
+            process::exit(1);
         }
     }
 }
