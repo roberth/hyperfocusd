@@ -23,9 +23,10 @@
           description = "Benchmark environment switch daemon socket";
           wantedBy = [ "sockets.target" ];
           socketConfig = {
-            ListenStream = "/run/hyperfocusd/hyperfocusd.sock";
+            ListenStream = "/run/hyperfocusd/hyperfocusd.socket";
             SocketMode = "0666";
             RuntimeDirectory = "hyperfocusd";
+            Accept = "no";
           };
         };
 

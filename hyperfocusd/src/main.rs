@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use listenfd::ListenFd;
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{self, Command, Stdio};
 
@@ -75,21 +75,41 @@ fn run_daemon() {
 
     eprintln!("hyperfocusd daemon started and ready");
 
-    // Accept connections and handle them
+    // Accept connections and handle them sequentially
+    // The single-threaded loop provides mutual exclusion naturally
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
                 eprintln!("Client connected");
 
-                // Read the request from the client
-                let reader = BufReader::new(&stream);
-                let mut lines = reader.lines();
+                // Read the request from the client using BufReader
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
 
-                if let Some(Ok(line)) = lines.next() {
-                    eprintln!("Received request: {}", line);
+                if reader.read_line(&mut line).is_ok() {
+                    eprintln!("Received request: {}", line.trim());
 
-                    // For now, just acknowledge
-                    let _ = stream.write_all(b"OK\n");
+                    // Acknowledge
+                    let _ = reader.get_mut().write_all(b"OK\n");
+
+                    // Wait for client to finish and send DONE message
+                    // This blocks the loop, ensuring only one client is active at a time
+                    line.clear();
+                    match reader.read_line(&mut line) {
+                        Ok(0) => {
+                            eprintln!("Client disconnected without sending DONE (crashed or killed?)");
+                        }
+                        Ok(_) => {
+                            if line.trim() == "DONE" {
+                                eprintln!("Client finished cleanly");
+                            } else {
+                                eprintln!("Client sent unexpected message: {}", line.trim());
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading from client: {}", e);
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -121,7 +141,7 @@ fn run_on_with_args(command: Vec<String>) {
     }
 
     // Connect to the daemon socket
-    let socket_path = "/run/hyperfocusd/hyperfocusd.sock";
+    let socket_path = "/run/hyperfocusd/hyperfocusd.socket";
     let mut stream = UnixStream::connect(socket_path)
         .unwrap_or_else(|e| {
             eprintln!("Failed to connect to hyperfocusd: {}", e);
@@ -132,16 +152,18 @@ fn run_on_with_args(command: Vec<String>) {
     stream.write_all(b"START\n").unwrap();
 
     // Wait for acknowledgment
-    let reader = BufReader::new(&stream);
-    let mut lines = reader.lines();
-    if let Some(Ok(response)) = lines.next() {
-        if response != "OK" {
-            eprintln!("Unexpected response from daemon: {}", response);
-            process::exit(1);
+    {
+        let reader = BufReader::new(&stream);
+        let mut lines = reader.lines();
+        if let Some(Ok(response)) = lines.next() {
+            if response != "OK" {
+                eprintln!("Unexpected response from daemon: {}", response);
+                process::exit(1);
+            }
         }
-    }
-
+    } // reader dropped here, but stream remains alive
     // Run the command with HYPERFOCUSING=1 environment variable
+    // The stream stays open during command execution, ensuring mutual exclusion
     let mut child = Command::new(&command[0])
         .args(&command[1..])
         .env("HYPERFOCUSING", "1")
@@ -156,6 +178,12 @@ fn run_on_with_args(command: Vec<String>) {
 
     // Wait for the command to complete
     let status = child.wait().unwrap();
+
+    // Send goodbye message to daemon
+    let _ = stream.write_all(b"DONE\n");
+
+    // Close connection to daemon
+    drop(stream);
 
     // Exit with the same status code as the child process
     process::exit(status.code().unwrap_or(1));

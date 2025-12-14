@@ -55,6 +55,41 @@
 
         # Verify daemon is running after socket activation
         machine.succeed("systemctl is-active hyperfocusd.service")
+
+        # Test mutual exclusion: only one client should be active at a time
+        # System state: No active clients
+        machine.succeed("mkfifo /tmp/release-first /tmp/release-second")
+
+        # Start first client in background
+        # It will connect to daemon, enter hyperfocus mode, write started marker, then block reading the fifo
+        # System state after this: First client is active
+        machine.succeed("hyperfocus-on -- sh -c 'echo started >/tmp/first-started && cat /tmp/release-first' >/dev/null &")
+
+        # Wait for first client to actually start running its command
+        machine.succeed("timeout 1 grep started /tmp/first-started >/dev/null")
+
+        # Start second client in background
+        # It should NOT run its command until first client finishes
+        # System state: First client active, second client waiting (not yet running command)
+        machine.succeed("hyperfocus-on -- sh -c 'echo started >/tmp/second-started && cat /tmp/release-second' >/dev/null &")
+
+        # Give second client a moment to try to start
+        machine.succeed("sleep 0.5")
+
+        # Verify second client has NOT started yet (mutual exclusion working)
+        # If mutual exclusion works, second-started file should not exist yet
+        machine.fail("test -f /tmp/second-started")
+
+        # Release first client by writing to its fifo
+        # System state after: First client completes, second client becomes active and runs
+        machine.succeed("echo done >/tmp/release-first")
+
+        # Wait for second client to start (may take a moment for daemon to accept next connection)
+        machine.wait_until_succeeds("grep started /tmp/second-started >/dev/null")
+
+        # Release second client
+        # System state after: Second client completes
+        machine.succeed("echo done >/tmp/release-second")
       '';
     };
   };
