@@ -4,22 +4,24 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    nix-cargo-integration.url = "github:yusdacra/nix-cargo-integration";
   };
 
-  outputs = inputs@{ flake-parts, ... }:
+  outputs = inputs@{ flake-parts, nix-cargo-integration, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [
+        nix-cargo-integration.flakeModule
+      ];
+
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
 
-      perSystem = { config, self', inputs', pkgs, system, ... }: {
-        # Single package containing both hyperfocusd and hyperfocus-on
-        packages.default = pkgs.writeShellScriptBin "hyperfocusd" ''
-          echo "hyperfocusd not yet implemented"
-          exit 1
-        '';
+      perSystem = { config, pkgs, self', ... }: {
+        nci.projects.hyperfocusd.path = ./.;
+        packages.default = config.nci.outputs.hyperfocusd.packages.release;
 
-        checks = {
-          # VM test for basic hyperfocusd workflow
-          vm-test = pkgs.testers.runNixOSTest {
+        devShells.default = config.nci.outputs.hyperfocusd.devShell;
+
+        checks.vm-test = pkgs.testers.runNixOSTest {
             name = "hyperfocusd-basic-workflow";
 
             nodes.machine = { config, pkgs, ... }: {
@@ -58,7 +60,6 @@
               # Verify daemon is still running after session ends
               machine.succeed("systemctl is-active hyperfocusd.service")
             '';
-          };
         };
       };
     };

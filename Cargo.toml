@@ -1,0 +1,3 @@
+[workspace]
+members = ["hyperfocusd"]
+resolver = "2"
