@@ -31,5 +31,10 @@
 
         devShells.default = config.nci.outputs.hyperfocusd.devShell;
       };
+
+      # raw flake output attrs
+      flake = {
+        herculesCI.ciSystems = [ "x86_64-linux" ];
+      };
     };
 }
